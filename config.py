@@ -1,9 +1,10 @@
 from dataclasses import dataclass, asdict, field
-import optuna
 import yaml
 import importlib
 
+import jax
 import optax
+import optuna
 
 
 @dataclass
@@ -75,6 +76,7 @@ class RunConfig:
 def default_run_config():
     return RunConfig(
         project="JAX_Template",
+        device="cuda:0",
         seeds=[42],
         net="model.MLP",
         optimizer="optax.adamw",
