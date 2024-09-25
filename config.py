@@ -188,8 +188,5 @@ class OptimizeConfig:
         return params
 
 
-
 def abbreviate(s: str):
     return ''.join([w for w in s if w.isupper()])
-
-
