@@ -31,11 +31,11 @@ class RunConfig:
         with open(path, 'w') as file:
             yaml.dump(asdict(self), file, sort_keys=False)
 
-    def create_model(self, seed):
+    def create_model(self, key):
         module_name, class_name = self.net.rsplit('.', 1)
         module = importlib.import_module(module_name)
         model_class = getattr(module, class_name)
-        return model_class(self.net_config, jax.random.PRNGKey(seed))
+        return model_class(self.net_config, key)
 
     def create_optimizer(self):
         module_name, class_name = self.optimizer.rsplit('.', 1)
