@@ -2,13 +2,12 @@ import jax
 import jax.numpy as jnp
 import equinox as eqx
 import wandb
-import survey
-import polars as pl
 import numpy as np
 
 import random
 import os
 import math
+from typing import Tuple, Iterator
 
 from config import RunConfig, OptimizeConfig
 
@@ -18,40 +17,49 @@ def save(model, path):
         eqx.tree_serialise_leaves(f, model)
 
 
+class Dataset:
+    def __init__(self, data: Tuple[jnp.ndarray, ...]):
+        self.data = data
+
+    def __len__(self):
+        return len(self.data[0])
+
+    def __getitem__(self, idx):
+        return tuple(d[idx] for d in self.data)
+
+
 class DataLoader:
-    def __init__(self, x, y, batch_size, shuffle=True, drop_last=False):
-        self.x = x
-        self.y = y
+    def __init__(self, dataset: Dataset, batch_size: int, shuffle: bool = True, drop_last: bool = False):
+        self.dataset = dataset
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.drop_last = drop_last
 
-        self.num_samples = x.shape[0]
+        self.num_samples = len(dataset)
         self.num_batches = self.num_samples // batch_size
         if not drop_last and self.num_samples % batch_size != 0:
             self.num_batches += 1
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Tuple[jnp.ndarray, ...]]:
         indices = np.arange(self.num_samples)
         if self.shuffle:
             np.random.shuffle(indices)
-            self.x = self.x[indices]
-            self.y = self.y[indices]
         for i in range(self.num_batches):
             start = i * self.batch_size
             end = min(start + self.batch_size, self.num_samples)
-            yield self.x[start:end], self.y[start:end]
+            batch_indices = indices[start:end]
+            yield self.dataset[batch_indices]
 
     def __len__(self):
         return self.num_batches
 
 
-def load_data(dataset_size, key):
+def load_data(dataset_size: int, key: jnp.ndarray) -> Dataset:
     x = jnp.linspace(0, 2 * jnp.pi, dataset_size)
     x = x.reshape((dataset_size, 1))
     epsilon = jax.random.normal(key, x.shape) * 0.01
     y = jnp.sin(x) + epsilon
-    return x, y
+    return Dataset((x, y))
 
 
 def set_seed(seed: int):
@@ -70,8 +78,8 @@ class Trainer:
     @eqx.filter_jit
     def train_epoch(self, model, dl_train, opt_state):
         total_loss = 0.0
-        for x, y in dl_train:
-            loss, grads = self.criterion(model, x, y)
+        for batch in dl_train:
+            loss, grads = self.criterion(model, batch)
             updates, _ = self.optim.update(grads, opt_state, params=model)
             model = eqx.apply_updates(model, updates)
             total_loss += loss
@@ -81,10 +89,10 @@ class Trainer:
     @eqx.filter_jit
     def val_epoch(self, model, dl_val):
         total_loss = 0.0
-        for x, y in dl_val:
-            loss, _ = self.criterion(model, x, y)
+        for batch in dl_val:
+            loss, _ = self.criterion(model, batch)
             total_loss += loss
-        return total_loss
+        return total_loss / len(dl_val)
 
     def train(self, dl_train, dl_val, epochs):
         model = self.model
@@ -109,7 +117,7 @@ class Trainer:
         return val_loss
 
 
-def run(run_config: RunConfig, x_train, y_train, x_val, y_val, group_name=None):
+def run(run_config: RunConfig, train_dataset: Dataset, val_dataset: Dataset, group_name = None) -> float:
     project = run_config.project
     seeds = run_config.seeds
     if not group_name:
@@ -129,8 +137,8 @@ def run(run_config: RunConfig, x_train, y_train, x_val, y_val, group_name=None):
         optimizer = run_config.create_optimizer()
         scheduler = run_config.create_scheduler()
 
-        dl_train = DataLoader(x_train, y_train, run_config.batch_size)
-        dl_val = DataLoader(x_val, y_val, run_config.batch_size)
+        dl_train = DataLoader(train_dataset, run_config.batch_size)
+        dl_val = DataLoader(val_dataset, run_config.batch_size)
 
         run_name = f"{seed}"
         wandb.init(
@@ -157,6 +165,7 @@ def run(run_config: RunConfig, x_train, y_train, x_val, y_val, group_name=None):
 
 
 @eqx.filter_value_and_grad
-def mse(model, x, y):
+def mse(model, batch):
+    x, y = batch
     y_hat = jax.vmap(model)(x)
     return jnp.mean((y - y_hat) ** 2)

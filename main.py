@@ -1,10 +1,4 @@
 import jax
-import jax.numpy as jnp
-import equinox as eqx
-import optax
-import wandb
-import survey
-import optuna
 
 from util import load_data, run
 from config import RunConfig, OptimizeConfig
@@ -22,8 +16,8 @@ def main():
     base_config = RunConfig.from_yaml(args.run_config)
 
     # Load data
-    x_train, y_train = load_data(10000, jax.random.PRNGKey(0))
-    x_val, y_val = load_data(2000, jax.random.PRNGKey(1))
+    train_dataset = load_data(10000, jax.random.PRNGKey(0))
+    val_dataset = load_data(2000, jax.random.PRNGKey(1))
 
     # Run
     if args.optimize_config:
@@ -41,7 +35,7 @@ def main():
 
             trial.set_user_attr("group_name", group_name)
 
-            return run(run_config, x_train, y_train, x_val, y_val, group_name)
+            return run(run_config, train_dataset, val_dataset, group_name)
 
         optimize_config = OptimizeConfig.from_yaml(args.optimize_config)
         study = optimize_config.create_study(project=f"{base_config.project}_Opt")
@@ -56,7 +50,7 @@ def main():
         print(f"  Path: runs/{base_config.project}_Opt/{trial.user_attrs['group_name']}")
         
     else:
-        run(base_config, x_train, y_train, x_val, y_val)
+        run(base_config, train_dataset, val_dataset)
 
 
 if __name__ == "__main__":
