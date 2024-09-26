@@ -69,28 +69,52 @@ def set_seed(seed: int):
 
 
 class Trainer:
-    def __init__(self, model, optimizer, scheduler, criterion):
+    def __init__(self, model, optimizer, scheduler):
         self.model = model
         self.scheduler = scheduler.gen_scheduler()
         self.optim = optimizer
-        self.criterion = criterion
 
     @eqx.filter_jit
+    def step(self, model, x):
+        return jax.vmap(model)(x)
+    
+    @eqx.filter_jit
+    def loss_fn(self, model, x, y):
+        y_pred = self.step(model, x)
+        return jnp.mean((y - y_pred) ** 2)
+
+    @eqx.filter_jit
+    def train_step(self, model, x, y):
+        loss, grads = eqx.filter_value_and_grad(self.loss_fn)(model, x, y)
+        return loss, grads
+
+    @eqx.filter_jit
+    def update_params(self, grads, opt_state, model):
+        updates, opt_state = self.optim.update(grads, opt_state, params=model)
+        return updates, opt_state
+
+    @eqx.filter_jit
+    def val_step(self, model, x, y):
+        return self.loss_fn(model, x, y)
+
+    #@eqx.filter_jit # If model is lightweight, use this
     def train_epoch(self, model, dl_train, opt_state):
         total_loss = 0.0
         for batch in dl_train:
-            loss, grads = self.criterion(model, batch)
-            updates, _ = self.optim.update(grads, opt_state, params=model)
+            x, y = batch
+            loss, grads = self.train_step(model, x, y)
+            updates, opt_state = self.update_params(grads, opt_state, model)
             model = eqx.apply_updates(model, updates)
             total_loss += loss
         loss = total_loss / len(dl_train)
         return loss, model
 
-    @eqx.filter_jit
+    #@eqx.filter_jit # If model is lightweight, use this
     def val_epoch(self, model, dl_val):
         total_loss = 0.0
         for batch in dl_val:
-            loss, _ = self.criterion(model, batch)
+            x, y = batch
+            loss = self.val_step(model, x, y)
             total_loss += loss
         return total_loss / len(dl_val)
 
