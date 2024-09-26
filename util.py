@@ -3,6 +3,8 @@ import jax.numpy as jnp
 import equinox as eqx
 import wandb
 import numpy as np
+import survey
+import optuna
 
 import random
 import os
@@ -15,6 +17,11 @@ from config import RunConfig, OptimizeConfig
 def save(model, path):
     with open(path, 'wb') as f:
         eqx.tree_serialise_leaves(f, model)
+
+
+def load(model, path):
+    with open(path, 'rb') as f:
+        return eqx.tree_deserialise_leaves(f, model)
 
 
 class Dataset:
@@ -71,7 +78,8 @@ def set_seed(seed: int):
 class Trainer:
     def __init__(self, model, optimizer, scheduler):
         self.model = model
-        self.scheduler = scheduler.gen_scheduler()
+        if scheduler is not None:
+            self.scheduler = scheduler.gen_scheduler()
         self.optim = optimizer
 
     @eqx.filter_jit
@@ -173,7 +181,7 @@ def run(run_config: RunConfig, train_dataset: Dataset, val_dataset: Dataset, gro
             config=run_config.gen_config(),
         )
 
-        trainer = Trainer(model, optimizer, scheduler, mse)
+        trainer = Trainer(model, optimizer, scheduler)
         val_loss = trainer.train(dl_train, dl_val, run_config.epochs)
         total_loss += val_loss
 
@@ -188,8 +196,114 @@ def run(run_config: RunConfig, train_dataset: Dataset, val_dataset: Dataset, gro
     return total_loss / len(seeds)
 
 
-@eqx.filter_value_and_grad
-def mse(model, batch):
-    x, y = batch
-    y_hat = jax.vmap(model)(x)
-    return jnp.mean((y - y_hat) ** 2)
+# ┌──────────────────────────────────────────────────────────┐
+#  For Analyze
+# └──────────────────────────────────────────────────────────┘
+def select_project():
+    runs_path = "runs/"
+    projects = [d for d in os.listdir(runs_path) if os.path.isdir(os.path.join(runs_path, d))]
+    if not projects:
+        raise ValueError(f"No projects found in {runs_path}")
+    
+    selected_index = survey.routines.select("Select a project:", options=projects)
+    return projects[selected_index] # pyright: ignore
+
+
+def select_group(project):
+    runs_path = f"runs/{project}"
+    groups = [d for d in os.listdir(runs_path) if os.path.isdir(os.path.join(runs_path, d))]
+    if not groups:
+        raise ValueError(f"No run groups found in {runs_path}")
+    
+    selected_index = survey.routines.select("Select a run group:", options=groups)
+    return groups[selected_index] # pyright: ignore
+
+def select_seed(project, group_name):
+    group_path = f"runs/{project}/{group_name}"
+    seeds = [d for d in os.listdir(group_path) if os.path.isdir(os.path.join(group_path, d))]
+    if not seeds:
+        raise ValueError(f"No seeds found in {group_path}")
+    
+    selected_index = survey.routines.select("Select a seed:", options=seeds)
+    return seeds[selected_index] # pyright: ignore
+
+def select_device():
+    devices = list(jax.devices())
+    devices_str = [f"{d}" for d in devices]
+    selected_index = survey.routines.select("Select a device:", options=devices_str)
+    return devices[selected_index] # pyright: ignore
+
+
+def load_model(project, group_name, seed):
+    """
+    Load a trained model and its configuration.
+
+    Args:
+        project (str): The name of the project.
+        group_name (str): The name of the run group.
+        seed (str): The seed of the specific run.
+
+    Returns:
+        tuple: A tuple containing the loaded model and its configuration.
+
+    Raises:
+        FileNotFoundError: If the config or model file is not found.
+
+    Example usage:
+        model, config = load_model("MyProject", "experiment1", "seed42")
+    """
+    config_path = f"runs/{project}/{group_name}/config.yaml"
+    model_path = f"runs/{project}/{group_name}/{seed}/model.eqx"
+    
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found for {project}/{group_name}")
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model file not found for {project}/{group_name}/{seed}")
+    
+    config = RunConfig.from_yaml(config_path)
+    model_key = jax.random.PRNGKey(int(seed))
+    model = config.create_model(model_key)
+    model = load(model, model_path)
+    
+    return model, config
+
+
+def load_study(project, study_name):
+    """
+    Load the best study from an optimization run.
+
+    Args:
+        project (str): The name of the project.
+        study_name (str): The name of the study.
+
+    Returns:
+        optuna.Study: The loaded study object.
+    """
+    study = optuna.load_study(
+        study_name=study_name,
+        storage=f'sqlite:///{project}.db'
+    )
+    return study
+
+
+def load_best_model(project, study_name):
+    """
+    Load the best model and its configuration from an optimization study.
+
+    Args:
+        project (str): The name of the project.
+        study_name (str): The name of the study.
+
+    Returns:
+        tuple: A tuple containing the loaded model, its configuration, and the best trial number.
+    """
+    study = load_study(project, study_name)
+    best_trial = study.best_trial
+    project_name = project
+    group_name = best_trial.user_attrs['group_name']
+
+    # Select Seed
+    seed = select_seed(project_name, group_name)
+    best_model, best_config = load_model(project_name, group_name, seed)
+
+    return best_model, best_config
