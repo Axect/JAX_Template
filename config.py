@@ -35,7 +35,7 @@ class RunConfig:
         module_name, class_name = self.net.rsplit('.', 1)
         module = importlib.import_module(module_name)
         model_class = getattr(module, class_name)
-        return model_class(self.net_config, key)
+        return model_class(self.net_config, key=key)
 
     def create_optimizer(self):
         module_name, class_name = self.optimizer.rsplit('.', 1)
